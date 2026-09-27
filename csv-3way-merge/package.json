@@ -1,0 +1,19 @@
+{
+  "name": "csv-3way-merge",
+  "version": "1.0.0",
+  "description": "本地三方 CSV 合并工具（基准 / 本地 / 远端）",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "node test/e2e.test.js && node test/api.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "multer": "^2.4.0"
+  }
+}

@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CSV 三方合并工具</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>CSV 三方合并</h1>
+    <span class="subtitle">基准 · 本地 · 远端 — 全程本地处理，不上传任何第三方服务</span>
+  </header>
+
+  <main>
+    <!-- 第一步：上传 -->
+    <section id="step-upload" class="card">
+      <h2><span class="step-no">1</span> 上传三份 UTF-8 CSV</h2>
+      <div class="upload-grid">
+        <label class="upload-box">
+          <span class="upload-label label-base">基准（Base）</span>
+          <input type="file" id="file-base" accept=".csv,text/csv" data-role="base" />
+          <span class="file-name" id="name-base">未选择文件</span>
+        </label>
+        <label class="upload-box">
+          <span class="upload-label label-local">本地（Local）</span>
+          <input type="file" id="file-local" accept=".csv,text/csv" data-role="local" />
+          <span class="file-name" id="name-local">未选择文件</span>
+        </label>
+        <label class="upload-box">
+          <span class="upload-label label-remote">远端（Remote）</span>
+          <input type="file" id="file-remote" accept=".csv,text/csv" data-role="remote" />
+          <span class="file-name" id="name-remote">未选择文件</span>
+        </label>
+      </div>
+      <div class="actions">
+        <button id="btn-upload" class="primary">解析文件</button>
+        <button id="btn-sample" class="ghost" type="button">载入示例数据</button>
+      </div>
+      <div id="upload-errors" class="errors hidden"></div>
+    </section>
+
+    <!-- 第二步：选键列 -->
+    <section id="step-key" class="card hidden">
+      <h2><span class="step-no">2</span> 选择三份共有的唯一键列</h2>
+      <div class="file-meta" id="file-meta"></div>
+      <div class="key-row">
+        <label for="key-select">唯一键列：</label>
+        <select id="key-select"></select>
+        <button id="btn-merge" class="primary">开始三方比对</button>
+      </div>
+      <div id="key-errors" class="errors hidden"></div>
+    </section>
+
+    <!-- 第三步：解决冲突 -->
+    <section id="step-result" class="card hidden">
+      <h2><span class="step-no">3</span> 审查差异并解决冲突</h2>
+
+      <div id="summary" class="summary"></div>
+
+      <div class="toolbar">
+        <div class="filters" id="filters">
+          <button data-filter="all" class="filter active">全部</button>
+          <button data-filter="conflict" class="filter">仅冲突</button>
+          <button data-filter="modified" class="filter">自动修改</button>
+          <button data-filter="added" class="filter">新增</button>
+          <button data-filter="deleted" class="filter">删除</button>
+          <button data-filter="unchanged" class="filter">未变</button>
+        </div>
+        <div class="export-area">
+          <span id="unresolved-badge" class="badge"></span>
+          <button id="btn-export" class="primary" disabled>下载合并 CSV</button>
+        </div>
+      </div>
+
+      <div id="export-errors" class="errors hidden"></div>
+
+      <div class="plan-box">
+        <div class="plan-head">
+          <div class="plan-title">跨轮裁决方案</div>
+          <div class="plan-actions">
+            <button id="btn-plan-export" class="ghost" type="button" disabled>下载裁决方案 JSON</button>
+            <button id="btn-plan-import" class="ghost" type="button">导入裁决方案…</button>
+            <input type="file" id="plan-file" accept=".json,application/json" hidden />
+          </div>
+        </div>
+        <p class="plan-note">
+          全部冲突裁决后可把这些行下载为方案；重新上传三份 CSV 并比对后导入，
+          服务端按唯一键逐行核对——唯一键列、表头、三方原值与冲突类型完全相同的行才整行套用，
+          行序与原文件行号变化不影响；本轮已手动裁决的行会整行跳过，格式错误不会改动任何裁决。
+        </p>
+        <div id="plan-errors" class="errors hidden"></div>
+        <div id="plan-report" class="plan-report hidden">
+          <div id="plan-report-summary" class="ledger-summary"></div>
+          <h3 class="ledger-deleted-title">已套用的行</h3>
+          <div id="plan-applied-empty" class="ledger-deleted-empty hidden">没有套用任何行</div>
+          <div class="table-wrap" id="plan-applied-wrap">
+            <table id="plan-applied-table">
+              <thead>
+                <tr><th>唯一键</th><th>套用的裁决</th></tr>
+              </thead>
+              <tbody id="plan-applied-tbody"></tbody>
+            </table>
+          </div>
+          <h3 class="ledger-deleted-title">跳过的行</h3>
+          <div id="plan-skipped-empty" class="ledger-deleted-empty hidden">没有跳过的行</div>
+          <div class="table-wrap" id="plan-skipped-wrap">
+            <table id="plan-skipped-table">
+              <thead>
+                <tr><th>唯一键</th><th>跳过原因</th></tr>
+              </thead>
+              <tbody id="plan-skipped-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table id="merge-table">
+          <thead id="merge-thead"></thead>
+          <tbody id="merge-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 第四步：合并结果来源账本 -->
+    <section id="step-ledger" class="card hidden">
+      <h2><span class="step-no">4</span> 合并结果来源账本</h2>
+      <p class="ledger-intro">
+        冲突全部裁决后，这里按最终 CSV 行序列出每个保留键各列的<b>最终值、取值来源与原文件行号</b>；
+        被删除的键不混入输出行，单独列在下方并注明删除原因。
+        账本由服务端按本轮数据与裁决实时计算，逐格取值与「下载合并 CSV」完全一致；
+        每次改动裁决后都会重新生成，也可以下载 JSON 账本存档或复核。
+      </p>
+
+      <div class="toolbar">
+        <div class="ledger-legend" id="ledger-legend"></div>
+        <div class="export-area">
+          <button id="btn-ledger" class="primary" disabled>下载 JSON 账本</button>
+        </div>
+      </div>
+
+      <div id="ledger-pending" class="ledger-pending hidden">
+        还有未解决的冲突：全部裁决完成后才会生成完整账本。
+      </div>
+      <div id="ledger-errors" class="errors hidden"></div>
+
+      <div id="ledger-content" class="hidden">
+        <div id="ledger-summary" class="ledger-summary"></div>
+        <div class="table-wrap">
+          <table id="ledger-table">
+            <thead id="ledger-thead"></thead>
+            <tbody id="ledger-tbody"></tbody>
+          </table>
+        </div>
+
+        <h3 class="ledger-deleted-title">删除的键（不进入合并结果）</h3>
+        <div id="ledger-deleted-empty" class="ledger-deleted-empty hidden">无删除的键</div>
+        <div class="table-wrap" id="ledger-deleted-wrap">
+          <table id="ledger-deleted-table">
+            <thead>
+              <tr><th>唯一键</th><th>删除原因</th><th>原文件行号</th></tr>
+            </thead>
+            <tbody id="ledger-deleted-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 第五步：父子层级核验 -->
+    <section id="step-hierarchy" class="card hidden">
+      <h2><span class="step-no">5</span> 父子层级核验</h2>
+      <p class="ledger-intro">
+        如果合并结果承载父子层级（分类、组织、菜单等），在这里选择<b>父键列</b>（不能是唯一键列）。
+        冲突全部裁决后，服务端按最终保留行以最终唯一键建立索引自动核验：<b>空父键视为根</b>；
+        父键指向不存在或已删除的键记<b>缺失父项</b>；父键指向自身或相互成环的环上成员记<b>循环</b>
+        （仅仅指向环的行不报）。问题按最终 CSV 行序列出，每次改动裁决后自动重新核验。
+        核验只提示问题，不会改变导出的 CSV，也可以下载 JSON 结果存档。
+      </p>
+
+      <div class="toolbar">
+        <div class="key-row">
+          <label for="parent-select">父键列：</label>
+          <select id="parent-select"></select>
+        </div>
+        <div class="export-area">
+          <button id="btn-hierarchy" class="primary" disabled>下载核验 JSON</button>
+        </div>
+      </div>
+
+      <div id="hierarchy-hint" class="hierarchy-hint hidden">
+        从上方选择父键列后开始核验（唯一键列不可作为父键列）。
+      </div>
+      <div id="hierarchy-pending" class="ledger-pending hidden">
+        还有未解决的冲突：全部裁决完成后才会给出完整的层级核验结论。
+      </div>
+      <div id="hierarchy-errors" class="errors hidden"></div>
+
+      <div id="hierarchy-content" class="hidden">
+        <div id="hierarchy-summary" class="ledger-summary"></div>
+        <div id="hierarchy-clean" class="hierarchy-clean hidden">未发现缺失父项或循环 ✓</div>
+        <div class="table-wrap" id="hierarchy-wrap">
+          <table id="hierarchy-table">
+            <thead>
+              <tr><th>问题键</th><th>父键</th><th>类型</th><th>输出行号</th></tr>
+            </thead>
+            <tbody id="hierarchy-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+    <!-- 第六步：父子数据导入顺序 -->
+    <section id="step-order" class="card hidden">
+      <h2><span class="step-no">6</span> 父子数据导入顺序</h2>
+      <p class="ledger-intro">
+        下游系统导入父子层级数据时通常要求<b>父行先于子行</b>写入。冲突全部裁决、并在第 5 区
+        选择父键列后，服务端按最终保留行核验层级：存在<b>缺失父项</b>或<b>循环</b>时列出
+        问题键与类型并<b>阻止顺序导出</b>（第 3 区的合并 CSV 导出不受影响）；
+        层级有效时按父先子后排序——每步从当前可输出的行里选原合并 CSV 行序最早者——
+        下方展示排序后的键序，可下载顺序 CSV（沿用基准表头与原单元格值，仅行序重排）。
+        改动裁决或父键列后自动重新计算。
+      </p>
+
+      <div class="toolbar">
+        <div class="hierarchy-hint" id="order-parent-now">父键列沿用第 5 区的选择。</div>
+        <div class="export-area">
+          <button id="btn-order" class="primary" disabled>下载顺序 CSV</button>
+        </div>
+      </div>
+
+      <div id="order-hint" class="hierarchy-hint hidden">
+        请先在第 5 区选择父键列，再计算父子数据导入顺序。
+      </div>
+      <div id="order-pending" class="ledger-pending hidden">
+        还有未解决的冲突：全部裁决完成后才会计算父子数据导入顺序。
+      </div>
+      <div id="order-errors" class="errors hidden"></div>
+
+      <div id="order-result" class="hidden">
+        <div id="order-summary" class="ledger-summary"></div>
+        <div id="order-blocked" class="order-blocked hidden">
+          存在缺失父项或循环：已阻止顺序导出（第 3 区的合并 CSV 导出不受影响）。
+          调整裁决或数据后，顺序会随层级核验一起自动重新计算。
+        </div>
+        <div class="table-wrap hidden" id="order-issues-wrap">
+          <table id="order-issues-table">
+            <thead>
+              <tr><th>问题键</th><th>父键</th><th>类型</th><th>输出行号</th></tr>
+            </thead>
+            <tbody id="order-issues-tbody"></tbody>
+          </table>
+        </div>
+        <div class="table-wrap hidden" id="order-keys-wrap">
+          <table id="order-keys-table">
+            <thead>
+              <tr><th>导入顺序</th><th>唯一键</th><th>父键</th><th>原合并 CSV 行号</th></tr>
+            </thead>
+            <tbody id="order-keys-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 第七步：疑似唯一键变更核对 -->
+    <section id="step-keycheck" class="card hidden">
+      <h2><span class="step-no">7</span> 疑似唯一键变更核对</h2>
+      <p class="ledger-intro">
+        有些「删除 + 新增」其实可能是同一行改了唯一键。冲突全部裁决后，服务端从本轮基准与
+        最终结果提取<b>消失键</b>（基准有、最终结果没有）与<b>新增键</b>（最终结果有、基准没有），
+        两组各限 12 个，任一组超限都会明确提示而不给出配对。在下方选择至少一个<b>非键比较列</b>，
+        并设置 0 至比较列数的整数<b>差异上限</b>：逐格按原字符串比较，以不同格数为代价，
+        超限的行对不能配对。服务端求允许交叉的一对一配对（先让配对数最多，再让总代价最小），
+        并对每个消失键列出所有最优方案中可能对应的新键与是否可能未配对；只有所有最优方案都
+        配向同一新键时才标为<b>稳定候选</b>——候选只是核对线索，不能认定为真实改名。
+        核对不改变任何数据与裁决；改动裁决或核对参数后自动重算。
+      </p>
+
+      <div class="toolbar">
+        <div class="keycheck-controls">
+          <div class="keycheck-cols" id="keycheck-cols"></div>
+          <div class="key-row">
+            <label for="keycheck-maxdiff">差异上限：</label>
+            <input type="number" id="keycheck-maxdiff" min="0" step="1" value="0" />
+            <span class="keycheck-maxdiff-hint" id="keycheck-maxdiff-hint"></span>
+          </div>
+        </div>
+        <div class="export-area">
+          <button id="btn-keycheck" class="primary" disabled>下载核对 JSON</button>
+        </div>
+      </div>
+
+      <div id="keycheck-hint" class="hierarchy-hint hidden">
+        请至少选择一个非键比较列，核对才会开始。
+      </div>
+      <div id="keycheck-pending" class="ledger-pending hidden">
+        还有未解决的冲突：全部裁决完成后才会进行疑似唯一键变更核对。
+      </div>
+      <div id="keycheck-limit" class="ledger-pending hidden"></div>
+      <div id="keycheck-errors" class="errors hidden"></div>
+
+      <div id="keycheck-content" class="hidden">
+        <div id="keycheck-summary" class="ledger-summary"></div>
+        <div id="keycheck-empty" class="hierarchy-hint hidden"></div>
+        <div id="keycheck-candidate-note" class="hierarchy-hint hidden">
+          稳定候选只是所有最优配对方案的一致指向，是核对线索，不能认定为真实改名。
+        </div>
+        <div class="table-wrap" id="keycheck-wrap">
+          <table id="keycheck-table">
+            <thead>
+              <tr>
+                <th>消失键（旧键）</th><th>基准行号</th><th>可能对应的新键（代价）</th>
+                <th>可能未配对</th><th>结论</th>
+              </tr>
+            </thead>
+            <tbody id="keycheck-tbody"></tbody>
+          </table>
+        </div>
+        <h3 class="ledger-deleted-title">未配对的新键（所有最优方案中都不与旧键配对）</h3>
+        <div id="keycheck-newkeys" class="keycheck-tags"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <small>所有数据仅在本机与本地容器之间传输 · 导出沿用基准表头顺序 · UTF-8（含 BOM，Excel 友好）</small>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>
