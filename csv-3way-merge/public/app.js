@@ -29,6 +29,8 @@
     parentColumn: '', // 父子层级核验选择的父键列（空 = 未选择）
     keyCheckColumns: [], // 疑似唯一键变更核对选中的非键比较列
     keyCheckMaxDiff: 0, // 差异上限（0 至比较列数的整数）
+    detTarget: '', // 最小决定列发现选择的目标列（非唯一键列）
+    detCandidates: [], // 最小决定列发现选中的候选列（互异，不含目标列 / 唯一键列）
   };
 
   // ---------- 工具 ----------
@@ -204,6 +206,7 @@
     resetHierarchy();
     resetOrder();
     resetKeycheck();
+    resetDeterminant();
     const sel = $('#key-select');
     sel.innerHTML = keyColumns.map((h) => `<option value="${esc(h)}">${esc(h)}</option>`).join('');
     // 默认猜测：名为 id / key / 编号 等
@@ -264,6 +267,7 @@
     resetHierarchy();
     resetOrder();
     resetKeycheck();
+    resetDeterminant();
     $('#step-key').classList.add('hidden');
     $('#step-result').classList.add('hidden');
     $('#step-upload').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -277,6 +281,7 @@
     renderTable();
     setupHierarchy();
     setupKeycheck();
+    setupDeterminant();
     updateResolutionState();
     $('#step-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
@@ -584,6 +589,8 @@
     refreshOrder(count);
     // 以及疑似唯一键变更核对（未选比较列时只提示选择）
     refreshKeycheck(count);
+    // 以及最小决定列发现（未选目标列 / 候选列时只提示选择）
+    refreshDeterminant(count);
   }
 
   // ---------- 来源账本 ----------
@@ -1346,6 +1353,282 @@
     } finally {
       // 409（未决冲突 / 超限）时保持禁用，其余情况恢复
       btn.disabled = $('#keycheck-content').classList.contains('hidden');
+    }
+  });
+
+  // ---------- 最小决定列发现 ----------
+  // 发现完全由服务端按本轮模型与当前裁决计算（只读，不改变任何数据与裁决）；
+  // 前端只负责选择目标列 / 候选列、展示最小决定组合与证明行对并下载 JSON
+  let detTimer = null; // 防抖
+  let detSeq = 0; // 丢弃过期的响应
+
+  function resetDeterminant() {
+    clearTimeout(detTimer);
+    detSeq++;
+    state.detTarget = '';
+    state.detCandidates = [];
+    $('#step-determinant').classList.add('hidden');
+    hideDeterminantResult();
+    $('#det-pending').classList.add('hidden');
+    $('#det-hint').classList.add('hidden');
+    $('#det-empty').classList.add('hidden');
+    $('#det-combo-tbody').innerHTML = '';
+    $('#det-counterexample').classList.add('hidden');
+    $('#btn-determinant').disabled = true;
+  }
+
+  function hideDeterminantResult() {
+    $('#det-content').classList.add('hidden');
+    $('#det-errors').classList.add('hidden');
+    $('#det-limit').classList.add('hidden');
+    $('#det-empty').classList.add('hidden');
+    $('#btn-determinant').disabled = true;
+  }
+
+  // 每次合并成功后重建目标列与候选列：均为唯一键列之外的表头列。
+  // 目标列默认第一个非键列；候选列默认勾选前 10 个（其余需手动勾选），旧结论一并清除
+  function setupDeterminant() {
+    const m = state.model;
+    clearTimeout(detTimer);
+    detSeq++;
+    const nonKey = m.headers.filter((h) => h !== m.keyColumn);
+    state.detTarget = nonKey[0] || '';
+    state.detCandidates = nonKey.filter((h) => h !== state.detTarget).slice(0, 10);
+
+    $('#det-target').innerHTML = nonKey
+      .map((h) => `<option value="${esc(h)}">${esc(h)}</option>`)
+      .join('');
+    renderDetCandidates();
+    hideDeterminantResult();
+    $('#det-pending').classList.add('hidden');
+    $('#det-hint').classList.add('hidden');
+  }
+
+  // 渲染候选列勾选框：目标列 / 唯一键列不可选；超过 10 个时其余列需手动取消后再勾选
+  function renderDetCandidates() {
+    const m = state.model;
+    const nonKey = m.headers.filter((h) => h !== m.keyColumn);
+    $('#det-candidates').innerHTML =
+      `<span class="kc-cols-label">候选列（1～10 个，互异；不含目标列）：</span>` +
+      nonKey
+        .map((h) => {
+          const disabled = h === state.detTarget;
+          const checked = !disabled && state.detCandidates.includes(h);
+          return (
+            `<label class="keycheck-col${disabled ? ' kc-disabled' : ''}">` +
+            `<input type="checkbox" value="${esc(h)}"${checked ? ' checked' : ''}${
+              disabled ? ' disabled' : ''
+            } /> ${esc(h)}</label>`
+          );
+        })
+        .join('');
+    $('#det-target').value = state.detTarget;
+  }
+
+  function readDetCandidates() {
+    return Array.from(
+      document.querySelectorAll('#det-candidates input[type="checkbox"]:checked'),
+    ).map((cb) => cb.value);
+  }
+
+  /**
+   * 裁决或选列变化后调用：全部解决、目标列已选且候选列为 1～10 个时才请求服务端
+   * （防抖）；有未决冲突或参数不完整时收起旧结论，避免展示过时结果。
+   */
+  function refreshDeterminant(unresolvedCount) {
+    if (!state.model) {
+      resetDeterminant();
+      return;
+    }
+    $('#step-determinant').classList.remove('hidden');
+    const n = state.detCandidates.length;
+    if (!state.detTarget || n < 1 || n > 10) {
+      clearTimeout(detTimer);
+      detSeq++;
+      hideDeterminantResult();
+      $('#det-pending').classList.add('hidden');
+      $('#det-empty').classList.add('hidden');
+      $('#det-hint').classList.remove('hidden');
+      return;
+    }
+    $('#det-hint').classList.add('hidden');
+    if (unresolvedCount > 0) {
+      clearTimeout(detTimer);
+      detSeq++;
+      hideDeterminantResult();
+      $('#det-pending').classList.remove('hidden');
+      return;
+    }
+    $('#det-pending').classList.add('hidden');
+    clearTimeout(detTimer);
+    detTimer = setTimeout(loadDeterminant, 250);
+  }
+
+  // 目标列变化：候选列中去掉新目标列（互异、不含目标），重建勾选框后自动重算
+  $('#det-target').addEventListener('change', () => {
+    state.detTarget = $('#det-target').value;
+    state.detCandidates = state.detCandidates.filter((h) => h !== state.detTarget);
+    renderDetCandidates();
+    refreshDeterminant(computeUnresolved().count);
+  });
+
+  // 候选列勾选变化：选中数超过 10 个时拒绝刚勾选的那一个（取消勾选不受限），随后自动重算
+  $('#det-candidates').addEventListener('change', (ev) => {
+    let picked = readDetCandidates();
+    if (picked.length > 10) {
+      // 超限：刚勾选的列不算入候选（复选框回退为未选），保留此前至多 10 个选择
+      const just = ev.target && ev.target.value;
+      picked = picked.filter((h) => h !== just);
+      state.detCandidates = picked;
+      renderDetCandidates();
+    } else {
+      state.detCandidates = picked;
+    }
+    refreshDeterminant(computeUnresolved().count);
+  });
+
+  async function requestDeterminant() {
+    const { status, data } = await postJSON('/api/determinants', {
+      roundId: state.roundId,
+      decisions: state.decisions,
+      targetColumn: state.detTarget,
+      candidateColumns: state.detCandidates,
+    });
+    if (data.ok) return data;
+    if (status === 404 && data.stage === 'round') {
+      showErrors($('#upload-errors'), data.errors || []);
+      handleRoundExpired();
+      return null;
+    }
+    if (status === 409 && data.stage === 'unresolved') {
+      // 服务端判定仍有未决冲突：不给出结论，回到待解决提示
+      hideDeterminantResult();
+      $('#det-pending').classList.remove('hidden');
+      return null;
+    }
+    if (status === 409 && data.stage === 'limit') {
+      // 最终保留行超过 300 行：明确提示，不给出结论
+      hideDeterminantResult();
+      const limitEl = $('#det-limit');
+      limitEl.textContent =
+        (data.errors && data.errors[0] && data.errors[0].message) ||
+        `最终保留行超过最多 ${data.limit || 300} 行的上限，无法进行发现`;
+      limitEl.classList.remove('hidden');
+      return null;
+    }
+    hideDeterminantResult();
+    showErrors(
+      $('#det-errors'),
+      data.errors || [{ file: null, line: null, message: '最小决定列发现失败' }],
+    );
+    return null;
+  }
+
+  async function loadDeterminant() {
+    const seq = ++detSeq;
+    const data = await requestDeterminant();
+    if (!data || seq !== detSeq) return;
+    $('#det-errors').classList.add('hidden');
+    $('#det-limit').classList.add('hidden');
+    if (data.emptyData) {
+      // 一行都没有：提示无数据，不展示结论
+      hideDeterminantResult();
+      $('#det-empty').classList.remove('hidden');
+      return;
+    }
+    $('#det-empty').classList.add('hidden');
+    renderDeterminant(data.analysis);
+    $('#det-content').classList.remove('hidden');
+    $('#btn-determinant').disabled = false;
+  }
+
+  function detValue(v) {
+    return v === '' ? '<span class="lg-empty">（空）</span>' : esc(v);
+  }
+
+  // 证明 / 反例行对：两行的键、最终行号与目标值
+  function detPairHtml(pair) {
+    const row = (r) =>
+      `<span class="kc-cand"><code>${esc(r.key)}</code>（第 ${r.line} 行，目标值 ${detValue(
+        r.targetValue,
+      )}）</span>`;
+    return `<div class="det-pair">${row(pair.first)} <span class="det-vs">≠</span> ${row(
+      pair.second,
+    )}</div>`;
+  }
+
+  function renderDeterminant(a) {
+    $('#det-summary').innerHTML =
+      `<span class="stat">目标列 <b>${esc(a.targetColumn)}</b></span>` +
+      `<span class="stat">参与行数 <b>${a.rowCount}</b> / ${a.limit}</span>` +
+      `<span class="stat">候选列 <b>${a.candidateColumns.length}</b></span>` +
+      `<span class="stat">最小组合数 <b>${a.combinationCount}</b></span>`;
+
+    $('#det-constant').classList.toggle('hidden', !a.constant);
+
+    // 目标恒定时只有空组合：隐藏组合表，靠提示块说明
+    $('#det-combo-wrap').classList.toggle('hidden', a.constant);
+    $('#det-combo-tbody').innerHTML = a.combinations
+      .filter((c) => c.size > 0)
+      .map((c, i) => {
+        const cols = c.columns.map((h) => `<span class="kc-tag">${esc(h)}</span>`).join(' ');
+        const witnesses = c.witnesses
+          .map(
+            (w) =>
+              `<div class="det-witness"><div class="det-removed">移除 <code>${esc(
+                w.removedColumn,
+              )}</code> 后失效：</div>${detPairHtml(w.pair)}</div>`,
+          )
+          .join('');
+        return (
+          `<tr><td class="order-seq">${i + 1}</td>` +
+          `<td>${c.size}</td><td>${cols}</td><td>${witnesses}</td></tr>`
+        );
+      })
+      .join('');
+
+    // 一个成立组合都没有：给出全候选列相同而目标不同的反例
+    const ce = $('#det-counterexample');
+    if (a.counterexample) {
+      ce.innerHTML =
+        `<h3 class="ledger-deleted-title">没有任何候选列组合能决定目标列</h3>` +
+        `<div class="det-ce-note">下列两行在<b>全部 ${a.counterexample.columns.length} 个候选列</b>` +
+        `（${a.counterexample.columns
+          .map((h) => `<code>${esc(h)}</code>`)
+          .join('、')}）上完全相同，目标值却不同：</div>` +
+        detPairHtml(a.counterexample.pair);
+      ce.classList.remove('hidden');
+    } else {
+      ce.classList.add('hidden');
+      ce.innerHTML = '';
+    }
+  }
+
+  // 下载发现 JSON：以服务端按当前裁决与选列实时计算的结果为准
+  $('#btn-determinant').addEventListener('click', async () => {
+    const errEl = $('#det-errors');
+    const btn = $('#btn-determinant');
+    btn.disabled = true;
+    try {
+      const data = await requestDeterminant();
+      if (!data || data.emptyData) return;
+      errEl.classList.add('hidden');
+      const blob = new Blob([JSON.stringify(data.analysis, null, 2)], {
+        type: 'application/json;charset=utf-8',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'minimal-determinants.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      showErrors(errEl, [{ file: null, line: null, message: `发现结果下载失败：${e.message}` }]);
+    } finally {
+      // 409（未决冲突 / 超限）或无数据时保持禁用，其余情况恢复
+      btn.disabled = $('#det-content').classList.contains('hidden');
     }
   });
 

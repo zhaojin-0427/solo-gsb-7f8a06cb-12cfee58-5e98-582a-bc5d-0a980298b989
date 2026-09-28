@@ -12,6 +12,11 @@ const {
   validateKeyCheckParams,
   buildKeyChangeCheck,
 } = require('../src/keychange');
+const {
+  DETERMINANT_ROW_LIMIT,
+  validateDeterminantParams,
+  buildDeterminants,
+} = require('../src/determinants');
 
 let passed = 0;
 function test(name, fn) {
@@ -1239,6 +1244,190 @@ test('核对：有未决冲突时不给出结论；裁决变化后消失键集�
   assert.strictEqual(out.check.oldCount, 0);
   assert.strictEqual(out.check.pairCount, 0);
   assert.deepStrictEqual(out.check.unpairedNewKeys, ['N1']);
+});
+
+// ---------- 最小决定列发现 ----------
+// id 唯一键；c 由单列 d 决定，也由 (a,b) 联合决定；e 在所有行上恒定；
+// K1 与 K4 在 a/b/d/c 上完全重复
+const DET_CSV =
+  'id,a,b,c,d,e\nK1,1,1,X,9,C\nK2,1,2,Y,8,C\nK3,2,1,Z,7,C\nK4,1,1,X,9,C';
+
+function detModel(csv = DET_CSV) {
+  return buildMerge(parse3(csv, csv, csv), 'id');
+}
+
+test('发现：参数校验（目标列 / 候选列）', () => {
+  const m = detModel();
+  assert.strictEqual(validateDeterminantParams(m, '', ['a']), '请求缺少 targetColumn（目标列）');
+  assert.ok(validateDeterminantParams(m, 'nope', ['a']).includes('不在表头'));
+  assert.ok(validateDeterminantParams(m, 'id', ['a']).includes('不能是唯一键列'));
+  assert.ok(validateDeterminantParams(m, 'a', []).includes('至少选择一个'));
+  assert.ok(validateDeterminantParams(m, 'a', null).includes('必须是列名数组'));
+  assert.ok(validateDeterminantParams(m, 'a', ['id']).includes('不能包含唯一键列'));
+  assert.ok(validateDeterminantParams(m, 'a', ['a']).includes('不能包含目标列'));
+  assert.ok(validateDeterminantParams(m, 'a', ['b', 'b']).includes('重复'));
+  assert.ok(validateDeterminantParams(m, 'a', ['nope']).includes('不在表头'));
+  const eleven = Array.from({ length: 11 }, (_, i) => `x${i}`);
+  const wide = `id,a,${eleven.join(',')}\nK,1,${eleven.map((_, i) => i).join(',')}`;
+  const mw = detModel(wide);
+  assert.ok(validateDeterminantParams(mw, 'a', eleven).includes('最多 10 个'));
+});
+
+test('发现：枚举所有最小组合（单列与双列并存），按列数 / 表头列序排列', () => {
+  const out = buildDeterminants(detModel(), {}, 'c', ['a', 'b', 'd', 'e']);
+  assert.strictEqual(out.unresolved, 0);
+  const a = out.analysis;
+  assert.strictEqual(a.rowCount, 4);
+  assert.strictEqual(a.limit, DETERMINANT_ROW_LIMIT);
+  assert.strictEqual(a.constant, false);
+  assert.strictEqual(a.counterexample, null);
+  assert.deepStrictEqual(
+    a.combinations.map((c) => c.columns),
+    [['d'], ['a', 'b']],
+  );
+  assert.deepStrictEqual(a.combinations.map((c) => c.size), [1, 2]);
+});
+
+test('发现：非空组合逐列移除，附证明失效的行键及目标值；行对取字典序最早者', () => {
+  const a = buildDeterminants(detModel(), {}, 'c', ['a', 'b', 'd', 'e']).analysis;
+  const single = a.combinations[0];
+  assert.strictEqual(single.columns.join(','), 'd');
+  assert.strictEqual(single.witnesses.length, 1);
+  assert.strictEqual(single.witnesses[0].removedColumn, 'd');
+  // 移除 d（空组合）：目标不同的字典序最早行对 = (K1,K2)
+  assert.deepStrictEqual(
+    [single.witnesses[0].pair.first.key, single.witnesses[0].pair.second.key],
+    ['K1', 'K2'],
+  );
+  assert.deepStrictEqual(
+    [single.witnesses[0].pair.first.targetValue, single.witnesses[0].pair.second.targetValue],
+    ['X', 'Y'],
+  );
+  assert.deepStrictEqual(
+    [single.witnesses[0].pair.first.line, single.witnesses[0].pair.second.line],
+    [2, 3],
+  );
+
+  const pair = a.combinations[1];
+  assert.deepStrictEqual(pair.columns, ['a', 'b']);
+  // 按组合列序逐列移除
+  assert.deepStrictEqual(pair.witnesses.map((w) => w.removedColumn), ['a', 'b']);
+  // 移除 a（剩 b）：b=1 的 K1(c=X) 与 K3(c=Z)
+  assert.deepStrictEqual(
+    [pair.witnesses[0].pair.first.key, pair.witnesses[0].pair.second.key],
+    ['K1', 'K3'],
+  );
+  assert.deepStrictEqual(
+    [pair.witnesses[0].pair.first.targetValue, pair.witnesses[0].pair.second.targetValue],
+    ['X', 'Z'],
+  );
+  // 移除 b（剩 a）：a=1 的 K1(c=X) 与 K2(c=Y)
+  assert.deepStrictEqual(
+    [pair.witnesses[1].pair.first.key, pair.witnesses[1].pair.second.key],
+    ['K1', 'K2'],
+  );
+});
+
+test('发现：证明行对按最终行序取字典序最早者（不是任意一对）', () => {
+  // i 恒为 1，x 在 K1/K3 为 0、K2/K4 为 2：空组合反例应取最早的 (K1,K2)，
+  // 而非同样成立的 (K1,K4) / (K3,K4)
+  const csv = 'id,i,x\nK1,1,0\nK2,1,2\nK3,1,0\nK4,1,2';
+  const a = buildDeterminants(detModel(csv), {}, 'x', ['i']).analysis;
+  // i 不决定 x → 无组合，全候选列反例
+  assert.strictEqual(a.combinationCount, 0);
+  assert.deepStrictEqual(
+    [a.counterexample.pair.first.key, a.counterexample.pair.second.key],
+    ['K1', 'K2'],
+  );
+  assert.deepStrictEqual(a.counterexample.columns, ['i']);
+});
+
+test('发现：目标恒定时仅返回空组合', () => {
+  const a = buildDeterminants(detModel(), {}, 'e', ['a', 'b', 'd']).analysis;
+  assert.strictEqual(a.constant, true);
+  assert.strictEqual(a.combinationCount, 1);
+  assert.deepStrictEqual(a.combinations, [{ size: 0, columns: [], witnesses: [] }]);
+  assert.strictEqual(a.counterexample, null);
+});
+
+test('发现：一个成立组合都没有时给出全候选列相同而目标不同的反例', () => {
+  // b=1 对应 a=1（K1）与 a=2（K3）
+  const a = buildDeterminants(detModel(), {}, 'a', ['b']).analysis;
+  assert.strictEqual(a.combinationCount, 0);
+  assert.ok(a.counterexample);
+  assert.deepStrictEqual(a.counterexample.columns, ['b']);
+  assert.deepStrictEqual(
+    [a.counterexample.pair.first.key, a.counterexample.pair.second.key],
+    ['K1', 'K3'],
+  );
+  assert.deepStrictEqual(
+    [a.counterexample.pair.first.targetValue, a.counterexample.pair.second.targetValue],
+    ['1', '2'],
+  );
+});
+
+test('发现：逐格按原字符串比较，空串也是一个值', () => {
+  // 空串组目标一致（两行空串、b 都为 x）→ a 决定 b
+  let csv = 'id,a,b\nK1,,x\nK2,,x\nK3,v,y\nK4,v,y';
+  let a = buildDeterminants(detModel(csv), {}, 'b', ['a']).analysis;
+  assert.deepStrictEqual(a.combinations.map((c) => c.columns), [['a']]);
+  // 空串组目标不同（x / y）→ a 不决定 b，反例两行 a 都为空串
+  csv = 'id,a,b\nK1,,x\nK2,,y\nK3,v,z';
+  a = buildDeterminants(detModel(csv), {}, 'b', ['a']).analysis;
+  assert.strictEqual(a.combinationCount, 0);
+  assert.deepStrictEqual(
+    [a.counterexample.pair.first.key, a.counterexample.pair.second.key],
+    ['K1', 'K2'],
+  );
+  assert.strictEqual(a.counterexample.pair.first.targetValue, 'x');
+  assert.strictEqual(a.counterexample.pair.second.targetValue, 'y');
+  // 尾随空格不裁剪：'v' 与 'v ' 是两个不同的值。
+  // 若错误裁剪空白，'v' 会与 'v ' 同组（目标 2 / 1）→ a 不成立；按原字符串则成立
+  csv = 'id,a,b\nK1,v ,1\nK2,v,2\nK3,v ,1';
+  a = buildDeterminants(detModel(csv), {}, 'b', ['a']).analysis;
+  assert.deepStrictEqual(a.combinations.map((c) => c.columns), [['a']]);
+  // 反过来：同属 'v'（原字符串相同）而目标不同 → 不成立
+  csv = 'id,a,b\nK1,v,1\nK2,v,2';
+  a = buildDeterminants(detModel(csv), {}, 'b', ['a']).analysis;
+  assert.strictEqual(a.combinationCount, 0);
+});
+
+test('发现：无最终保留行时 emptyData，不给结论', () => {
+  const p = parse3('id,a,b\nK1,1,x', 'id,a,b', 'id,a,b'); // 两侧都删除
+  const out = buildDeterminants(buildMerge(p, 'id'), {}, 'b', ['a']);
+  assert.strictEqual(out.emptyData, true);
+  assert.strictEqual(out.analysis, undefined);
+  assert.strictEqual(out.limitExceeded, undefined);
+});
+
+test('发现：最终保留行 300 为上限、301 超限', () => {
+  const mk = (n) =>
+    'id,a,b\n' + Array.from({ length: n }, (_, i) => `K${i},${i},v${i}`).join('\n');
+  let out = buildDeterminants(detModel(mk(300)), {}, 'b', ['a']);
+  assert.strictEqual(out.limitExceeded, undefined);
+  assert.strictEqual(out.analysis.rowCount, 300);
+  assert.deepStrictEqual(out.analysis.combinations.map((c) => c.columns), [['a']]);
+  out = buildDeterminants(detModel(mk(301)), {}, 'b', ['a']);
+  assert.deepStrictEqual(out.limitExceeded, { rowCount: 301, limit: DETERMINANT_ROW_LIMIT });
+  assert.strictEqual(out.analysis, undefined);
+});
+
+test('发现：有未决冲突时不给出结论；裁决变化后最终行随之变化', () => {
+  // T 被本地删除、被远端修改 → 行级冲突
+  const p = parse3('id,a,b\nT,1,x', 'id,a,b', 'id,a,b\nT,1,y');
+  const m = buildMerge(p, 'id');
+  assert.strictEqual(m.rows.find((r) => r.key === 'T').status, 'conflict');
+  let out = buildDeterminants(m, {}, 'b', ['a']);
+  assert.ok(out.unresolved > 0);
+  assert.strictEqual(out.analysis, undefined);
+  // 裁决删除 T：无最终保留行 → 无数据
+  out = buildDeterminants(m, { rowConflicts: { T: 'delete' } }, 'b', ['a']);
+  assert.strictEqual(out.unresolved, 0);
+  assert.strictEqual(out.emptyData, true);
+  // 裁决保留 T：一行，目标恒定 → 空组合
+  out = buildDeterminants(m, { rowConflicts: { T: 'keep' } }, 'b', ['a']);
+  assert.strictEqual(out.analysis.constant, true);
+  assert.deepStrictEqual(out.analysis.combinations, [{ size: 0, columns: [], witnesses: [] }]);
 });
 
 console.log(`\n全部 ${passed} 个测试通过`);

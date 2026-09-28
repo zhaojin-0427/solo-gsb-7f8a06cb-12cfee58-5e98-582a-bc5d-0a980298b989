@@ -1066,6 +1066,224 @@ const SMALL = {
       assert.strictEqual(r.json().check.pairCount, 0);
     });
 
+    // ---------- 最小决定列发现 ----------
+    // id 唯一键；c 由单列 d 决定，也由 (a,b) 联合决定；e 恒定；K1=K4 重复。无冲突。
+    const DET = {
+      base: {
+        filename: 'base.csv',
+        content:
+          'id,a,b,c,d,e\nK1,1,1,X,9,C\nK2,1,2,Y,8,C\nK3,2,1,Z,7,C\nK4,1,1,X,9,C',
+      },
+      local: { filename: 'local.csv', content: 'id,a,b,c,d,e\nK1,1,1,X,9,C\nK2,1,2,Y,8,C\nK3,2,1,Z,7,C\nK4,1,1,X,9,C' },
+      remote: { filename: 'remote.csv', content: 'id,a,b,c,d,e\nK1,1,1,X,9,C\nK2,1,2,Y,8,C\nK3,2,1,Z,7,C\nK4,1,1,X,9,C' },
+    };
+    const detRound = (await upload(DET)).json().roundId;
+    assert.strictEqual(
+      (await jsonReq('/api/merge', { roundId: detRound, keyColumn: 'id' })).status,
+      200,
+    );
+
+    await test('发现：roundId 无效 → 404；尚未合并 → 400', async () => {
+      let r = await jsonReq('/api/determinants', {
+        roundId: 'nope',
+        decisions: {},
+        targetColumn: 'c',
+        candidateColumns: ['a'],
+      });
+      assert.strictEqual(r.status, 404);
+      assert.strictEqual(r.json().stage, 'round');
+      const fresh = (await upload(DET)).json().roundId;
+      r = await jsonReq('/api/determinants', {
+        roundId: fresh,
+        decisions: {},
+        targetColumn: 'c',
+        candidateColumns: ['a'],
+      });
+      assert.strictEqual(r.status, 400);
+      assert.strictEqual(r.json().stage, 'request');
+    });
+
+    await test('发现：参数非法 → 400（目标列 / 候选列）', async () => {
+      const bad = [
+        [{ targetColumn: '', candidateColumns: ['a'] }, '缺少'],
+        [{ targetColumn: 'nope', candidateColumns: ['a'] }, '不在表头'],
+        [{ targetColumn: 'id', candidateColumns: ['a'] }, '唯一键'],
+        [{ targetColumn: 'a', candidateColumns: [] }, '至少'],
+        [{ targetColumn: 'a', candidateColumns: ['id'] }, '唯一键'],
+        [{ targetColumn: 'a', candidateColumns: ['a'] }, '目标列'],
+        [{ targetColumn: 'a', candidateColumns: ['b', 'b'] }, '重复'],
+        [{ targetColumn: 'a', candidateColumns: ['nope'] }, '不在表头'],
+        [{ targetColumn: 'a', candidateColumns: null }, '必须是'],
+      ];
+      for (const [patch, msg] of bad) {
+        const r = await jsonReq('/api/determinants', {
+          roundId: detRound,
+          decisions: {},
+          targetColumn: 'c',
+          candidateColumns: ['a'],
+          ...patch,
+        });
+        assert.strictEqual(r.status, 400, `${JSON.stringify(patch)} → ${r.text.slice(0, 120)}`);
+        assert.ok(r.json().errors[0].message.includes(msg), r.json().errors[0].message);
+      }
+      // 候选列超过 10 个
+      const manyCols = Array.from({ length: 11 }, (_, i) => `x${i}`);
+      const wide = {
+        base: { filename: 'b.csv', content: `id,t,${manyCols.join(',')}\nK,v,${manyCols.map((_, i) => i).join(',')}` },
+        local: { filename: 'l.csv', content: `id,t,${manyCols.join(',')}\nK,v,${manyCols.map((_, i) => i).join(',')}` },
+        remote: { filename: 'r.csv', content: `id,t,${manyCols.join(',')}\nK,v,${manyCols.map((_, i) => i).join(',')}` },
+      };
+      const wr = (await upload(wide)).json().roundId;
+      assert.strictEqual((await jsonReq('/api/merge', { roundId: wr, keyColumn: 'id' })).status, 200);
+      const r = await jsonReq('/api/determinants', {
+        roundId: wr,
+        decisions: {},
+        targetColumn: 't',
+        candidateColumns: manyCols,
+      });
+      assert.strictEqual(r.status, 400, r.text);
+      assert.ok(r.json().errors[0].message.includes('10'));
+    });
+
+    await test('发现：有未决冲突 → 409，不给出结论', async () => {
+      const r = await jsonReq('/api/determinants', {
+        roundId,
+        decisions: {},
+        targetColumn: 'city',
+        candidateColumns: ['name'],
+      });
+      assert.strictEqual(r.status, 409);
+      assert.strictEqual(r.json().stage, 'unresolved');
+      assert.strictEqual(r.json().analysis, undefined);
+    });
+
+    let detAnalysis = null;
+    await test('发现：返回所有最小组合、逐列移除证明；只读且无视夹带数据', async () => {
+      const r = await jsonReq('/api/determinants', {
+        roundId: detRound,
+        decisions: {},
+        targetColumn: 'c',
+        candidateColumns: ['a', 'b', 'd', 'e'],
+        // 伪造数据：服务端必须忽略
+        rows: [['HACK', '1', '2', '3', '4', '5']],
+        analysis: { combinations: [] },
+      });
+      assert.strictEqual(r.status, 200, r.text);
+      assert.strictEqual(r.json().emptyData, false);
+      detAnalysis = r.json().analysis;
+      assert.strictEqual(detAnalysis.targetColumn, 'c');
+      assert.strictEqual(detAnalysis.rowCount, 4);
+      assert.strictEqual(detAnalysis.limit, 300);
+      assert.strictEqual(detAnalysis.constant, false);
+      assert.deepStrictEqual(
+        detAnalysis.combinations.map((c) => c.columns),
+        [['d'], ['a', 'b']],
+      );
+      const [single, pair] = detAnalysis.combinations;
+      assert.strictEqual(single.witnesses[0].removedColumn, 'd');
+      assert.deepStrictEqual(
+        [single.witnesses[0].pair.first.key, single.witnesses[0].pair.second.key],
+        ['K1', 'K2'],
+      );
+      assert.deepStrictEqual(
+        [single.witnesses[0].pair.first.targetValue, single.witnesses[0].pair.second.targetValue],
+        ['X', 'Y'],
+      );
+      assert.deepStrictEqual(pair.witnesses.map((w) => w.removedColumn), ['a', 'b']);
+      assert.ok(!JSON.stringify(detAnalysis).includes('HACK'));
+      assert.ok(detAnalysis.disclaimer.includes('只适用于当前数据'));
+      // 只读：合并 CSV 导出不受影响
+      const ex = await jsonReq('/api/export', { roundId: detRound, decisions: {} });
+      assert.strictEqual(ex.status, 200, ex.text);
+    });
+
+    await test('发现：目标恒定 → 空组合；无组合 → 全候选列反例', async () => {
+      let r = await jsonReq('/api/determinants', {
+        roundId: detRound,
+        decisions: {},
+        targetColumn: 'e',
+        candidateColumns: ['a', 'b'],
+      });
+      assert.strictEqual(r.status, 200, r.text);
+      const a = r.json().analysis;
+      assert.strictEqual(a.constant, true);
+      assert.deepStrictEqual(a.combinations, [{ size: 0, columns: [], witnesses: [] }]);
+      assert.strictEqual(a.counterexample, null);
+
+      // 目标 a、候选 b：b=1 对应 a=1(K1) / 2(K3) → 无组合，给反例
+      r = await jsonReq('/api/determinants', {
+        roundId: detRound,
+        decisions: {},
+        targetColumn: 'a',
+        candidateColumns: ['b'],
+      });
+      assert.strictEqual(r.status, 200, r.text);
+      const a2 = r.json().analysis;
+      assert.strictEqual(a2.combinationCount, 0);
+      assert.deepStrictEqual(a2.combinations, []);
+      assert.deepStrictEqual(a2.counterexample.columns, ['b']);
+      assert.deepStrictEqual(
+        [a2.counterexample.pair.first.key, a2.counterexample.pair.second.key],
+        ['K1', 'K3'],
+      );
+      assert.deepStrictEqual(
+        [a2.counterexample.pair.first.targetValue, a2.counterexample.pair.second.targetValue],
+        ['1', '2'],
+      );
+    });
+
+    await test('发现：无最终保留行 → 200 且 emptyData=true；300 行允许、301 行 → 409', async () => {
+      // 两侧都删除：最终保留行为空
+      const gone = {
+        base: { filename: 'b.csv', content: 'id,a,b\nK1,1,x' },
+        local: { filename: 'l.csv', content: 'id,a,b' },
+        remote: { filename: 'r.csv', content: 'id,a,b' },
+      };
+      const rid = (await upload(gone)).json().roundId;
+      assert.strictEqual((await jsonReq('/api/merge', { roundId: rid, keyColumn: 'id' })).status, 200);
+      let r = await jsonReq('/api/determinants', {
+        roundId: rid,
+        decisions: {},
+        targetColumn: 'b',
+        candidateColumns: ['a'],
+      });
+      assert.strictEqual(r.status, 200, r.text);
+      assert.strictEqual(r.json().emptyData, true);
+      assert.strictEqual(r.json().analysis, undefined);
+
+      const mkFiles = (n) => {
+        const body = 'id,a,b\n' + Array.from({ length: n }, (_, i) => `K${i},${i},v${i}`).join('\n');
+        return {
+          base: { filename: 'b.csv', content: body },
+          local: { filename: 'l.csv', content: body },
+          remote: { filename: 'r.csv', content: body },
+        };
+      };
+      const rid300 = (await upload(mkFiles(300))).json().roundId;
+      assert.strictEqual((await jsonReq('/api/merge', { roundId: rid300, keyColumn: 'id' })).status, 200);
+      r = await jsonReq('/api/determinants', {
+        roundId: rid300,
+        decisions: {},
+        targetColumn: 'b',
+        candidateColumns: ['a'],
+      });
+      assert.strictEqual(r.status, 200, r.text);
+      assert.strictEqual(r.json().analysis.rowCount, 300);
+
+      const rid301 = (await upload(mkFiles(301))).json().roundId;
+      assert.strictEqual((await jsonReq('/api/merge', { roundId: rid301, keyColumn: 'id' })).status, 200);
+      r = await jsonReq('/api/determinants', {
+        roundId: rid301,
+        decisions: {},
+        targetColumn: 'b',
+        candidateColumns: ['a'],
+      });
+      assert.strictEqual(r.status, 409);
+      assert.strictEqual(r.json().stage, 'limit');
+      assert.strictEqual(r.json().rowCount, 301);
+      assert.strictEqual(r.json().limit, 300);
+    });
+
     // ---------- 标识无效 / 过期 / 串轮 ----------
     await test('合并使用不存在的 roundId → 404 且明确提示重新上传', async () => {
       const r = await jsonReq('/api/merge', { roundId: 'deadbeef'.repeat(8), keyColumn: 'id' });

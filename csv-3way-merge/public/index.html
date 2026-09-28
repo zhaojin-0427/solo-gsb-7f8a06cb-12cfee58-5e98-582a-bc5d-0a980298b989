@@ -319,6 +319,62 @@
         <div id="keycheck-newkeys" class="keycheck-tags"></div>
       </div>
     </section>
+
+    <!-- 第八步：最小决定列发现 -->
+    <section id="step-determinant" class="card hidden">
+      <h2><span class="step-no">8</span> 最小决定列发现</h2>
+      <p class="ledger-intro">
+        查找哪些候选列的<b>组合能决定目标列</b>：任意两行在组合各列上的取值都相同
+        （按原字符串比较，<b>空串也是值</b>）时，目标值也必相同，组合即成立。
+        冲突全部裁决后，服务端按本轮模型与当前裁决取得<b>最终保留行</b>（最多 300 行，超限提示），
+        枚举<b>所有成立且任何真子集都不成立</b>的组合（不只列数最少者）；
+        目标列恒定时仅返回<b>空组合</b>，一行都没有时提示无数据。
+        每个非空组合逐列移除，并附一对证明该列必要的行（剩余列相同、目标值不同）；
+        一个成立组合都没有时给出全候选列相同而目标不同的反例。
+        发现不改变任何数据与裁决，改动裁决或选列后自动重算；<b>结论仅适用于当前数据</b>。
+      </p>
+
+      <div class="toolbar">
+        <div class="det-controls">
+          <div class="key-row">
+            <label for="det-target">目标列：</label>
+            <select id="det-target"></select>
+          </div>
+          <div class="keycheck-cols" id="det-candidates"></div>
+        </div>
+        <div class="export-area">
+          <button id="btn-determinant" class="primary" disabled>下载发现 JSON</button>
+        </div>
+      </div>
+
+      <div id="det-hint" class="hierarchy-hint hidden">
+        请选择一个目标列并勾选 1～10 个候选列（候选不含目标列与唯一键列），发现才会开始。
+      </div>
+      <div id="det-pending" class="ledger-pending hidden">
+        还有未解决的冲突：全部裁决完成后才会进行最小决定列发现。
+      </div>
+      <div id="det-limit" class="ledger-pending hidden"></div>
+      <div id="det-empty" class="ledger-pending hidden">最终保留行为空：没有可比较的数据。</div>
+      <div id="det-errors" class="errors hidden"></div>
+
+      <div id="det-content" class="hidden">
+        <div id="det-summary" class="ledger-summary"></div>
+        <div id="det-constant" class="hierarchy-clean hidden">
+          目标列在所有最终保留行上恒定：空组合（无需任何列）即可决定目标列。
+        </div>
+        <div class="table-wrap" id="det-combo-wrap">
+          <table id="det-combo-table">
+            <thead>
+              <tr>
+                <th>#</th><th>组合列数</th><th>决定列组合</th><th>逐列移除的证明（剩余列相同而目标不同的行对）</th>
+              </tr>
+            </thead>
+            <tbody id="det-combo-tbody"></tbody>
+          </table>
+        </div>
+        <div id="det-counterexample" class="det-counterexample hidden"></div>
+      </div>
+    </section>
   </main>
 
   <footer>

@@ -490,6 +490,25 @@ tr.row-conflict { background: var(--conflict-bg); }
 }
 .keycheck-tags .kc-empty { font-size: 13px; color: var(--muted); }
 
+/* ---------- 第 8 区：最小决定列发现 ---------- */
+.det-controls { display: flex; flex-direction: column; gap: 10px; }
+.keycheck-col.kc-disabled { opacity: 0.45; cursor: not-allowed; background: #f3f4f6; }
+#det-combo-table td { padding: 6px 10px; vertical-align: top; }
+#det-combo-table td:nth-child(3) { min-width: 140px; }
+#det-combo-table td:nth-child(4) { min-width: 280px; }
+.det-witness { margin: 2px 0 6px; }
+.det-removed { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+.det-pair { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.det-vs { color: var(--conflict); font-weight: 700; }
+.det-counterexample {
+  margin-top: 14px;
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+.det-counterexample .det-ce-note { font-size: 13px; margin: 6px 0; }
+
 footer {
   text-align: center;
   color: var(--muted);
