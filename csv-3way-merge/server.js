@@ -12,6 +12,7 @@ const { buildHierarchyCheck, validateParentColumn } = require('./src/hierarchy')
 const { buildImportOrder } = require('./src/order');
 const { buildPlan, validatePlanStructure, applyPlan, cloneDecisions } = require('./src/plan');
 const { buildKeyChangeCheck, validateKeyCheckParams } = require('./src/keychange');
+const { buildDeterminants, validateDeterminantParams } = require('./src/determinants');
 const { RoundStore } = require('./src/rounds');
 
 const app = express();
@@ -632,6 +633,64 @@ app.post('/api/keycheck', (req, res) => {
     }
 
     res.json({ ok: true, roundId, check: result.check });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      ok: false,
+      stage: 'server',
+      errors: [{ file: null, line: null, message: err.message }],
+    });
+  }
+});
+
+/**
+ * POST /api/determinants
+ * body: { roundId, decisions, targetColumn, candidates }
+ * 最小决定列发现：冲突全部裁决后，从本轮模型与裁决取得最终保留行（最多 300 行，
+ * 超限返回 409 stage=limit 并给出行数），按原字符串比较（空串也是值），枚举全部
+ * 成立且任何真子集均不成立的候选列组合；目标恒定时只返回空组合；无保留行时
+ * noData=true 提示无数据；非空最小组合逐列移除附字典序最早的失效行对；无组合时
+ * 给出全候选列相同而目标不同的反例。只读：不改动模型、数据与任何裁决；
+ * 有未决冲突时返回 409。
+ */
+app.post('/api/determinants', (req, res) => {
+  try {
+    const { roundId, decisions, targetColumn, candidates } = req.body || {};
+    const round = roundStore.get(roundId);
+    if (!round) return roundNotFound(res);
+    const { model } = round;
+    if (!requireModel(res, model)) return;
+
+    const paramError = validateDeterminantParams(model, targetColumn, candidates);
+    if (paramError) {
+      return res.status(400).json({
+        ok: false,
+        stage: 'request',
+        errors: [{ file: null, line: null, message: paramError }],
+      });
+    }
+
+    const result = buildDeterminants(model, normalizeDecisions(decisions), targetColumn, candidates);
+    if (result.unresolved > 0) return unresolvedResponse(res, result);
+
+    if (result.limitExceeded) {
+      const le = result.limitExceeded;
+      return res.status(409).json({
+        ok: false,
+        stage: 'limit',
+        limit: le.limit,
+        rowCount: le.rowCount,
+        errors: [
+          {
+            file: null,
+            line: null,
+            message: `最终保留行 ${le.rowCount} 行，超过 ${le.limit} 行的上限，无法进行最小决定列发现`,
+          },
+        ],
+      });
+    }
+
+    res.json({ ok: true, roundId, result: result.result });
   } catch (err) {
     console.error(err);
     res.status(500).json({

@@ -12,6 +12,11 @@ const {
   validateKeyCheckParams,
   buildKeyChangeCheck,
 } = require('../src/keychange');
+const {
+  DETERMINANT_ROW_LIMIT,
+  validateDeterminantParams,
+  buildDeterminants,
+} = require('../src/determinants');
 
 let passed = 0;
 function test(name, fn) {
@@ -1239,6 +1244,197 @@ test('核对：有未决冲突时不给出结论；裁决变化后消失键集�
   assert.strictEqual(out.check.oldCount, 0);
   assert.strictEqual(out.check.pairCount, 0);
   assert.deepStrictEqual(out.check.unpairedNewKeys, ['N1']);
+});
+
+// ---------- 最小决定列发现 ----------
+test('发现参数：目标列非键且存在；候选列 1～10 个互异、不含目标列与唯一键列', () => {
+  const csv = 'id,a,b,c\n1,x,y,z';
+  const m = buildMerge(parse3(csv, csv, csv), 'id');
+  assert.strictEqual(validateDeterminantParams(m, 'a', ['b']), null);
+  assert.strictEqual(validateDeterminantParams(m, 'a', ['b', 'c']), null);
+  assert.ok(validateDeterminantParams(m, 'id', ['a']).includes('目标列不能是唯一键列'));
+  assert.ok(validateDeterminantParams(m, 'a', ['id']).includes('唯一键'));
+  assert.ok(validateDeterminantParams(m, 'a', ['a']).includes('目标列'));
+  assert.ok(validateDeterminantParams(m, 'a', ['b', 'b']).includes('重复'));
+  assert.ok(validateDeterminantParams(m, 'a', []).includes('1 至 10'));
+  assert.ok(validateDeterminantParams(m, 'a', null).includes('1 至 10'));
+  assert.ok(
+    validateDeterminantParams(m, 'a', ['a0','a1','a2','a3','a4','a5','a6','a7','a8','a9','a10'])
+      .includes('1 至 10'),
+  );
+  assert.ok(validateDeterminantParams(m, 'nope', ['b']).includes('不在表头'));
+  assert.ok(validateDeterminantParams(m, 'a', ['nope']).includes('不在表头'));
+  assert.ok(validateDeterminantParams(m, '', ['b']).includes('缺少'));
+  assert.ok(validateDeterminantParams(m, 123, ['b']).includes('缺少'));
+});
+
+test('发现：同时枚举出不同列数的所有最小组合（不只列数最少者），按列数 / 表头列序排列', () => {
+  // {a} 与 {b,c} 都决定 t；{b}、{c} 单独不决定；{a,b,c} 非最小
+  const csv =
+    'id,a,b,c,t\n' +
+    'r1,a1,b1,c1,X\n' +
+    'r2,a2,b1,c2,Y\n' +
+    'r3,a3,b2,c1,Y\n' +
+    'r4,a4,b2,c2,X';
+  const m = buildMerge(parse3(csv, csv, csv), 'id');
+  const out = buildDeterminants(m, {}, 't', ['a', 'b', 'c']);
+  assert.strictEqual(out.unresolved, 0);
+  assert.strictEqual(out.result.combinationCount, 2);
+  assert.deepStrictEqual(
+    out.result.combinations.map((c) => c.columns),
+    [['a'], ['b', 'c']],
+  );
+  const [sa, sbc] = out.result.combinations;
+  assert.strictEqual(sa.columnCount, 1);
+  assert.strictEqual(sbc.columnCount, 2);
+  assert.strictEqual(sa.witnesses.length, 1);
+  assert.strictEqual(sbc.witnesses.length, 2);
+  assert.deepStrictEqual(
+    sbc.witnesses.map((w) => [w.removedColumn, w.row1.key, w.row2.key]),
+    [
+      ['b', 'r1', 'r3'], // 移除 b 后按 c 分组：r1/r3 同 c1、t 不同（字典序最早）
+      ['c', 'r1', 'r2'], // 移除 c 后按 b 分组：r1/r2 同 b1、t 不同
+    ],
+  );
+  for (const w of sbc.witnesses) {
+    assert.strictEqual(w.row1.line, 2);
+    assert.notStrictEqual(w.row1.targetValue, w.row2.targetValue);
+  }
+  assert.strictEqual(out.result.counterexample, null);
+  assert.strictEqual(out.result.constantTarget, false);
+  assert.ok(out.result.disclaimer.includes('仅'));
+});
+
+test('发现：目标恒定时只返回空组合，无失效证明', () => {
+  const csv = 'id,x,y,t\n1,p,q,Z\n2,r,s,Z';
+  const m = buildMerge(parse3(csv, csv, csv), 'id');
+  const out = buildDeterminants(m, {}, 't', ['x', 'y']);
+  assert.strictEqual(out.result.combinationCount, 1);
+  assert.deepStrictEqual(out.result.combinations[0].columns, []);
+  assert.strictEqual(out.result.combinations[0].columnCount, 0);
+  assert.deepStrictEqual(out.result.combinations[0].witnesses, []);
+  assert.strictEqual(out.result.constantTarget, true);
+  assert.strictEqual(out.result.counterexample, null);
+});
+
+test('发现：无组合时给出全候选列相同而目标不同的字典序最早反例', () => {
+  // 扫描中先遇到 r3/r4（i=2）冲突，但全局 i 最小的冲突是后来才配成的 r2/r5（i=1）
+  const csv =
+    'id,x,y,t\n' +
+    'r1,p,q,A\n' +
+    'r2,u,v,A\n' +
+    'r3,w,z,A\n' +
+    'r4,w,z,B\n' +
+    'r5,u,v,B';
+  const m = buildMerge(parse3(csv, csv, csv), 'id');
+  const out = buildDeterminants(m, {}, 't', ['x', 'y']);
+  assert.strictEqual(out.result.combinationCount, 0);
+  assert.deepStrictEqual(out.result.combinations, []);
+  const ce = out.result.counterexample;
+  assert.strictEqual(ce.row1.key, 'r2');
+  assert.strictEqual(ce.row2.key, 'r5');
+  assert.strictEqual(ce.row1.targetValue, 'A');
+  assert.strictEqual(ce.row2.targetValue, 'B');
+  assert.deepStrictEqual(
+    ce.values.map((v) => [v.column, v.value]),
+    [
+      ['x', 'u'],
+      ['y', 'v'],
+    ],
+  );
+  assert.strictEqual(out.result.constantTarget, false);
+});
+
+test('发现：逐格按原字符串比较，空字符串也是普通值', () => {
+  // x 两行为空串但 y 不同 → {y} 成立、{x} 不成立；尾随空格不裁剪
+  const csv = 'id,x,y,t\n1,,q,A\n2,,s,B';
+  const m = buildMerge(parse3(csv, csv, csv), 'id');
+  let out = buildDeterminants(m, {}, 't', ['x', 'y']);
+  assert.deepStrictEqual(
+    out.result.combinations.map((c) => c.columns),
+    [['y']],
+  );
+  // 空串与含空格的串不同：两行 x 为 '' / ' ' 且目标不同，{x} 单独成立
+  const csv2 = 'id,x,t\n1,,A\n2, ,B';
+  const m2 = buildMerge(parse3(csv2, csv2, csv2), 'id');
+  out = buildDeterminants(m2, {}, 't', ['x']);
+  assert.deepStrictEqual(out.result.combinations.map((c) => c.columns), [['x']]);
+});
+
+test('发现：候选列序与表头不一致时仍按基准表头列序输出组合', () => {
+  const csv =
+    'id,a,b,t\n' +
+    'r1,a1,b1,X\n' +
+    'r2,a2,b1,Y\n' +
+    'r3,a1,b2,X';
+  const m = buildMerge(parse3(csv, csv, csv), 'id');
+  // 请求顺序倒着传；输出仍按表头列序
+  const out = buildDeterminants(m, {}, 't', ['b', 'a']);
+  assert.deepStrictEqual(out.result.candidateColumns, ['a', 'b']);
+  assert.deepStrictEqual(
+    out.result.combinations.map((c) => c.columns),
+    [['a']],
+  );
+});
+
+test('发现：无保留行时 noData=true 提示无数据', () => {
+  // K 被两侧删除（侧文件只有表头）→ 最终保留行 0
+  const m = buildMerge(parse3('id,x,t\nK,v,A', 'id,x,t', 'id,x,t'), 'id');
+  const out = buildDeterminants(m, {}, 't', ['x']);
+  assert.strictEqual(out.unresolved, 0);
+  assert.strictEqual(out.limitExceeded, undefined);
+  assert.strictEqual(out.result.noData, true);
+  assert.strictEqual(out.result.rowCount, 0);
+  assert.deepStrictEqual(out.result.combinations, []);
+  assert.strictEqual(out.result.counterexample, null);
+});
+
+test('发现：最终保留行超过 300 行时限超提示（limitExceeded），恰好 300 行正常', () => {
+  const make = (n) =>
+    'id,x,t\n' +
+    Array.from({ length: n }, (_, i) => `k${i},v${i},t${i}`).join('\n');
+  let m = buildMerge(parse3(make(301), make(301), make(301)), 'id');
+  let out = buildDeterminants(m, {}, 't', ['x']);
+  assert.strictEqual(out.result, undefined);
+  assert.deepStrictEqual(out.limitExceeded, { rowCount: 301, limit: DETERMINANT_ROW_LIMIT });
+  assert.strictEqual(DETERMINANT_ROW_LIMIT, 300);
+  m = buildMerge(parse3(make(300), make(300), make(300)), 'id');
+  out = buildDeterminants(m, {}, 't', ['x']);
+  assert.strictEqual(out.limitExceeded, undefined);
+  assert.strictEqual(out.result.rowCount, 300);
+  assert.deepStrictEqual(out.result.combinations.map((c) => c.columns), [['x']]);
+});
+
+test('发现：有未决冲突时不给出结论；裁决变化后结论随之变化', () => {
+  // T 本地 / 远端把 x 改成不同值 → 单元格冲突
+  const p = parse3('id,x,t\nT,v,A', 'id,x,t\nT,l,A', 'id,x,t\nT,r,B');
+  const m = buildMerge(p, 'id');
+  assert.strictEqual(m.rows.find((r) => r.key === 'T').status, 'conflict');
+  let out = buildDeterminants(m, {}, 't', ['x']);
+  assert.ok(out.unresolved > 0);
+  assert.strictEqual(out.result, undefined);
+  // 取本地：x 列冲突取本地 l（t 列仅远端改动，自动采纳 B）；仅一行 → 目标恒定
+  out = buildDeterminants(m, { cells: { T: { 1: { choice: 'local' } } } }, 't', ['x']);
+  assert.strictEqual(out.unresolved, 0);
+  assert.strictEqual(out.result.constantTarget, true);
+  // 取远端：同样只有一行 T，目标恒定
+  out = buildDeterminants(m, { cells: { T: { 1: { choice: 'remote' } } } }, 't', ['x']);
+  assert.strictEqual(out.result.constantTarget, true);
+});
+
+test('发现：最终行序与逐格取值和导出一致（读裁决后的最终保留行，含删除键）', () => {
+  // D 两侧删除不参与；保留键 K1/K2 在 x 上相同、t 不同 → 无组合，反例为 K1/K2
+  const p = parse3(
+    'id,x,t\nK1,v,A\nK2,v,B\nD,d,Z',
+    'id,x,t\nK1,v,A\nK2,v,B',
+    'id,x,t\nK1,v,A\nK2,v,B',
+  );
+  const m = buildMerge(p, 'id');
+  const out = buildDeterminants(m, {}, 't', ['x']);
+  assert.strictEqual(out.result.rowCount, 2);
+  const ce = out.result.counterexample;
+  assert.strictEqual(ce.row1.key, 'K1');
+  assert.strictEqual(ce.row2.key, 'K2');
 });
 
 console.log(`\n全部 ${passed} 个测试通过`);

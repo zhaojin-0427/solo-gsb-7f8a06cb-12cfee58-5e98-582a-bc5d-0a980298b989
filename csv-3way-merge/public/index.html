@@ -319,6 +319,80 @@
         <div id="keycheck-newkeys" class="keycheck-tags"></div>
       </div>
     </section>
+
+    <!-- 第八步：最小决定列发现 -->
+    <section id="step-determinants" class="card hidden">
+      <h2><span class="step-no">8</span> 最小决定列发现</h2>
+      <p class="ledger-intro">
+        选择一个<b>非键目标列</b>和 1～10 个互异<b>候选列</b>（不能包含目标列或唯一键列），
+        服务端从本轮模型与裁决取得最终保留行（最多 300 行，超限提示），逐格<b>按原字符串</b>
+        比较（空串也是值）：任意两行在组合各列上相同就必有相同目标值时，该组合成立。
+        页面列出<b>所有</b>成立且任何真子集都不成立的组合（不只列列数最少者）；
+        目标列恒定时只有空组合。每个非空组合逐列移除，附一对证明失效的行键与目标值；
+        没有成立组合时给出全部候选列相同而目标不同的反例行对。
+        裁决或选列变化后自动重算，结论<b>仅适用于当前数据</b>，不改变任何数据、裁决与 CSV 导出。
+      </p>
+
+      <div class="toolbar">
+        <div class="keycheck-controls">
+          <div class="key-row">
+            <label for="det-target-select">目标列：</label>
+            <select id="det-target-select"></select>
+          </div>
+          <div class="keycheck-cols" id="det-cands"></div>
+          <div class="keycheck-cands-hint" id="det-cands-hint"></div>
+        </div>
+        <div class="export-area">
+          <button id="btn-determinants" class="primary" disabled>下载发现 JSON</button>
+        </div>
+      </div>
+
+      <div id="det-hint" class="hierarchy-hint hidden">
+        请选择一个非键目标列并勾选 1～10 个互异候选列后开始发现。
+      </div>
+      <div id="det-pending" class="ledger-pending hidden">
+        还有未解决的冲突：全部裁决完成后才会进行最小决定列发现。
+      </div>
+      <div id="det-limit" class="ledger-pending hidden"></div>
+      <div id="det-nodata" class="ledger-pending hidden">
+        当前没有最终保留行（数据为空或全部被删除），无法进行最小决定列发现。
+      </div>
+      <div id="det-errors" class="errors hidden"></div>
+
+      <div id="det-content" class="hidden">
+        <div id="det-summary" class="ledger-summary"></div>
+        <div id="det-constant" class="hierarchy-clean hidden">
+          目标列在全部保留行中取值恒定：空组合（不需要任何列）即可决定目标列，无需再给其他组合。
+        </div>
+
+        <div id="det-combos-wrap" class="hidden">
+          <h3 class="ledger-deleted-title">最小决定组合（按列数、基准表头列序排列）</h3>
+          <div class="table-wrap">
+            <table id="det-table">
+              <thead>
+                <tr><th>#</th><th>组合列数</th><th>组合列（基准表头列序）</th><th>逐列移除的失效证明行对</th></tr>
+              </thead>
+              <tbody id="det-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="det-counter-wrap" class="hidden">
+          <h3 class="ledger-deleted-title">反例：全部候选列相同而目标值不同</h3>
+          <p class="plan-note">
+            下面两行在所选全部候选列上取值完全相同，目标列取值却不同，因此不存在任何成立的组合。
+          </p>
+          <div class="table-wrap">
+            <table id="det-counter-table">
+              <thead id="det-counter-thead"></thead>
+              <tbody id="det-counter-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <p class="det-disclaimer" id="det-disclaimer"></p>
+      </div>
+    </section>
   </main>
 
   <footer>
